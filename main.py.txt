@@ -1,0 +1,552 @@
+
+import os
+import asyncio
+
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import Command
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton
+)
+
+# =====================================
+# SOZLAMALAR
+# =====================================
+
+TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+
+dp = Dispatcher()
+
+# Hozircha natijalar xotirada saqlanadi
+users = {}
+active_tests = {}
+
+# =====================================
+# TEST SAVOLLARI
+# =====================================
+
+TARIX_QUESTIONS = [
+    {
+        "question": "Amir Temur qachon tug‘ilgan?",
+        "answers": ["1336-yil", "1405-yil", "1395-yil", "1220-yil"],
+        "correct": 0,
+        "explanation": "Amir Temur 1336-yil 9-aprelda tug‘ilgan."
+    },
+    {
+        "question": "O‘zbekiston mustaqilligi qachon e’lon qilingan?",
+        "answers": ["1990-yil", "1991-yil", "1992-yil", "1993-yil"],
+        "correct": 1,
+        "explanation": "O‘zbekiston mustaqilligi 1991-yil 31-avgustda e’lon qilingan."
+    }
+]
+
+HUQUQ_QUESTIONS = [
+    {
+        "question": "O‘zbekiston Konstitutsiyasi qachon qabul qilingan?",
+        "answers": ["1991-yil", "1992-yil", "1993-yil", "1994-yil"],
+        "correct": 1,
+        "explanation": "Konstitutsiya 1992-yil 8-dekabrda qabul qilingan."
+    },
+    {
+        "question": "O‘zbekiston Respublikasining davlat tili qaysi til?",
+        "answers": ["Rus tili", "Ingliz tili", "O‘zbek tili", "Tojik tili"],
+        "correct": 2,
+        "explanation": "Davlat tili — o‘zbek tili."
+    }
+]
+
+# =====================================
+# ASOSIY MENYU
+# =====================================
+
+def main_menu():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📚 Tarix testlari",
+                    callback_data="tarix"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⚖️ Huquq testlari",
+                    callback_data="huquq"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📝 Imtihon",
+                    callback_data="exam"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📊 Natijalarim",
+                    callback_data="result"
+                ),
+                InlineKeyboardButton(
+                    text="🏆 Reyting",
+                    callback_data="rating"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="👤 Profil",
+                    callback_data="profile"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="ℹ️ Yordam",
+                    callback_data="help"
+                )
+            ]
+        ]
+    )
+
+
+# =====================================
+# FOYDALANUVCHINI RO‘YXATGA OLISH
+# =====================================
+
+def register_user(user):
+    user_id = user.id
+
+    if user_id not in users:
+        users[user_id] = {
+            "name": user.full_name,
+            "tests": 0,
+            "correct": 0,
+            "points": 0
+        }
+
+
+# =====================================
+# TESTNI BOSHLASH
+# =====================================
+
+async def start_test(message, test_type):
+    register_user(message.from_user)
+
+    if test_type == "tarix":
+        questions = TARIX_QUESTIONS
+        title = "📚 TARIX TESTI"
+    elif test_type == "huquq":
+        questions = HUQUQ_QUESTIONS
+        title = "⚖️ HUQUQ TESTI"
+    else:
+        questions = TARIX_QUESTIONS + HUQUQ_QUESTIONS
+        title = "📝 UMUMIY IMTIHON"
+
+    user_id = message.from_user.id
+
+    active_tests[user_id] = {
+        "questions": questions,
+        "current": 0,
+        "correct": 0
+    }
+
+    await message.answer(
+        f"{title}\n\nTest boshlandi!",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="▶️ Boshlash",
+                        callback_data="next_question"
+                    )
+                ]
+            ]
+        )
+    )
+
+
+# =====================================
+# SAVOLNI CHIQARISH
+# =====================================
+
+async def show_question(callback):
+    user_id = callback.from_user.id
+
+    if user_id not in active_tests:
+        await callback.answer("Avval testni boshlang!")
+        return
+
+    test = active_tests[user_id]
+    index = test["current"]
+    questions = test["questions"]
+
+    if index >= len(questions):
+        await finish_test(callback)
+        return
+
+    question = questions[index]
+
+    buttons = []
+
+    for i, answer in enumerate(question["answers"]):
+        buttons.append([
+            InlineKeyboardButton(
+                text=answer,
+                callback_data=f"answer_{i}"
+            )
+        ])
+
+    await callback.message.edit_text(
+        f"❓ SAVOL {index + 1}/{len(questions)}\n\n"
+        f"{question['question']}",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=buttons
+        )
+    )
+
+
+# =====================================
+# JAVOBNI TEKSHIRISH
+# =====================================
+
+@dp.callback_query(F.data.startswith("answer_"))
+async def check_answer(callback: CallbackQuery):
+    user_id = callback.from_user.id
+
+    if user_id not in active_tests:
+        await callback.answer("Test faol emas!")
+        return
+
+    test = active_tests[user_id]
+    index = test["current"]
+
+    if index >= len(test["questions"]):
+        await callback.answer("Test tugagan!")
+        return
+
+    question = test["questions"][index]
+    selected = int(callback.data.split("_")[1])
+
+    if selected == question["correct"]:
+        test["correct"] += 1
+        result = "✅ To‘g‘ri javob!"
+        users[user_id]["correct"] += 1
+        users[user_id]["points"] += 10
+    else:
+        correct_answer = question["answers"][question["correct"]]
+        result = f"❌ Noto‘g‘ri javob!\nTo‘g‘ri javob: {correct_answer}"
+
+    explanation = question["explanation"]
+
+    test["current"] += 1
+
+    await callback.message.edit_text(
+        f"{result}\n\n"
+        f"📖 Izoh: {explanation}",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="➡️ Keyingi savol",
+                        callback_data="next_question"
+                    )
+                ]
+            ]
+        )
+    )
+
+    await callback.answer()
+
+
+# =====================================
+# KEYINGI SAVOL
+# =====================================
+
+@dp.callback_query(F.data == "next_question")
+async def next_question(callback: CallbackQuery):
+    await show_question(callback)
+    await callback.answer()
+
+
+# =====================================
+# TESTNI YAKUNLASH
+# =====================================
+
+async def finish_test(callback):
+    user_id = callback.from_user.id
+    test = active_tests[user_id]
+
+    total = len(test["questions"])
+    correct = test["correct"]
+    wrong = total - correct
+
+    users[user_id]["tests"] += 1
+
+    await callback.message.edit_text(
+        "🏁 TEST YAKUNLANDI!\n\n"
+        f"📚 Jami savollar: {total}\n"
+        f"✅ To‘g‘ri javoblar: {correct}\n"
+        f"❌ Noto‘g‘ri javoblar: {wrong}\n"
+        f"🏆 Ball: {correct * 10}\n\n"
+        "Yana test ishlash uchun /start bosing."
+    )
+
+    del active_tests[user_id]
+
+
+# =====================================
+# START
+# =====================================
+
+@dp.message(Command("start"))
+async def start_command(message: Message):
+    register_user(message.from_user)
+
+    await message.answer(
+        "🎓 TARIX VA HUQUQ TEST BOTI\n\n"
+        f"Assalomu alaykum, {message.from_user.full_name}!\n\n"
+        "Bilimingizni sinab ko‘ring va reytingda yuqori o‘rinni egallang!",
+        reply_markup=main_menu()
+    )
+
+
+# =====================================
+# YORDAM
+# =====================================
+
+@dp.message(Command("help"))
+async def help_command(message: Message):
+    await message.answer(
+        "ℹ️ BOT BUYRUQLARI\n\n"
+        "/start — Asosiy menyu\n"
+        "/tarix — Tarix testlari\n"
+        "/huquq — Huquq testlari\n"
+        "/daily — Kunlik test\n"
+        "/exam — Umumiy imtihon\n"
+        "/result — Natijalar\n"
+        "/stats — Statistika\n"
+        "/rating — Reyting\n"
+        "/profile — Profil\n"
+        "/pdf — PDF haqida\n"
+        "/info — Bot haqida"
+    )
+
+
+# =====================================
+# TARIX VA HUQUQ
+# =====================================
+
+@dp.message(Command("tarix"))
+async def tarix_command(message: Message):
+    await start_test(message, "tarix")
+
+
+@dp.message(Command("huquq"))
+async def huquq_command(message: Message):
+    await start_test(message, "huquq")
+
+
+@dp.message(Command("exam"))
+async def exam_command(message: Message):
+    await start_test(message, "exam")
+
+
+@dp.message(Command("daily"))
+async def daily_command(message: Message):
+    await start_test(message, "tarix")
+
+
+# =====================================
+# NATIJALAR
+# =====================================
+
+@dp.message(Command("result"))
+async def result_command(message: Message):
+    register_user(message.from_user)
+    data = users[message.from_user.id]
+
+    await message.answer(
+        "📊 SIZNING NATIJALARINGIZ\n\n"
+        f"📝 Ishlangan testlar: {data['tests']}\n"
+        f"✅ To‘g‘ri javoblar: {data['correct']}\n"
+        f"🏆 Ballar: {data['points']}"
+    )
+
+
+# =====================================
+# REYTING
+# =====================================
+
+@dp.message(Command("rating"))
+async def rating_command(message: Message):
+    if not users:
+        await message.answer("Hozircha reyting bo‘sh.")
+        return
+
+    ranking = sorted(
+        users.items(),
+        key=lambda item: item[1]["points"],
+        reverse=True
+    )
+
+    text = "🏆 FOYDALANUVCHILAR REYTINGI\n\n"
+
+    for i, (user_id, data) in enumerate(ranking[:10], start=1):
+        text += (
+            f"{i}. {data['name']} — "
+            f"{data['points']} ball\n"
+        )
+
+    await message.answer(text)
+
+
+# =====================================
+# PROFIL
+# =====================================
+
+@dp.message(Command("profile"))
+async def profile_command(message: Message):
+    register_user(message.from_user)
+    data = users[message.from_user.id]
+
+    await message.answer(
+        "👤 SIZNING PROFILINGIZ\n\n"
+        f"Ism: {data['name']}\n"
+        f"Testlar: {data['tests']}\n"
+        f"To‘g‘ri javoblar: {data['correct']}\n"
+        f"Ballar: {data['points']}"
+    )
+
+
+# =====================================
+# STATISTIKA
+# =====================================
+
+@dp.message(Command("stats"))
+async def stats_command(message: Message):
+    await message.answer(
+        "📊 BOT STATISTIKASI\n\n"
+        f"👥 Foydalanuvchilar: {len(users)}"
+    )
+
+
+# =====================================
+# PDF
+# =====================================
+
+@dp.message(Command("pdf"))
+async def pdf_command(message: Message):
+    await message.answer(
+        "📄 PDF TESTLAR\n\n"
+        "PDF materiallari hozircha botga ulanmagan."
+    )
+
+
+# =====================================
+# BOT HAQIDA
+# =====================================
+
+@dp.message(Command("info"))
+async def info_command(message: Message):
+    await message.answer(
+        "🎓 TARIX VA HUQUQ TEST BOTI\n\n"
+        "Tarix va huquq fanlaridan bilimni "
+        "mustahkamlash uchun yaratilgan."
+    )
+
+
+# =====================================
+# ADMIN
+# =====================================
+
+@dp.message(Command("admin"))
+async def admin_command(message: Message):
+    if ADMIN_ID == 0 or message.from_user.id != ADMIN_ID:
+        await message.answer("⛔ Siz admin emassiz.")
+        return
+
+    await message.answer(
+        "🛠 ADMIN PANEL\n\n"
+        f"Foydalanuvchilar: {len(users)}\n"
+        "Bot faol ishlamoqda."
+    )
+
+
+# =====================================
+# MENYU TUGMALARI
+# =====================================
+
+@dp.callback_query(F.data == "tarix")
+async def menu_tarix(callback: CallbackQuery):
+    await start_test(callback.message, "tarix")
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "huquq")
+async def menu_huquq(callback: CallbackQuery):
+    await start_test(callback.message, "huquq")
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "exam")
+async def menu_exam(callback: CallbackQuery):
+    await start_test(callback.message, "exam")
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "result")
+async def menu_result(callback: CallbackQuery):
+    data = users.get(callback.from_user.id)
+
+    if not data:
+        await callback.message.answer("Avval /start buyrug‘ini bosing.")
+    else:
+        await callback.message.answer(
+            f"📊 Testlar: {data['tests']}\n"
+            f"✅ To‘g‘ri javoblar: {data['correct']}\n"
+            f"🏆 Ballar: {data['points']}"
+        )
+
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "rating")
+async def menu_rating(callback: CallbackQuery):
+    await rating_command(callback.message)
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "profile")
+async def menu_profile(callback: CallbackQuery):
+    await profile_command(callback.message)
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "help")
+async def menu_help(callback: CallbackQuery):
+    await help_command(callback.message)
+    await callback.answer()
+
+
+# =====================================
+# BOTNI ISHGA TUSHIRISH
+# =====================================
+
+async def main():
+    if not TOKEN:
+        raise RuntimeError(
+            "BOT_TOKEN sozlanmagan! Railway Variables bo‘limiga token kiriting."
+        )
+
+    bot = Bot(token=TOKEN)
+
+    print("Bot ishga tushdi!")
+
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await bot.session.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
